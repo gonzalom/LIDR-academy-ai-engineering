@@ -31,3 +31,6 @@ docs/
 evals/stress/fixtures/*.pdf
 evals/stress/results.csv
 evals/stress/smoke.csv
+
+# Local-only compose overrides (host port clashes) — not part of any deliverable
+docker-compose.override.yml
