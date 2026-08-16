@@ -131,6 +131,11 @@ class Settings(BaseSettings):
     RETRIEVAL_API_KEY: str | None = None
     ESTIMATE_API_KEY: str | None = None
 
+    # Cross-encoder used by the reranker wrapper provided with the Session 10
+    # exercise. Multilingual, small enough to run on CPU. Weights (~450MB) are
+    # pulled from the HuggingFace hub on first load.
+    RERANKER_MODEL: str = "cross-encoder/mmarco-mMiniLMv2-L12-H384-v1"
+
     @model_validator(mode="after")
     def validate_at_least_one_api_key(self) -> "Settings":
         """LiteLLM may try either provider via fallback, so we require at least one key."""
