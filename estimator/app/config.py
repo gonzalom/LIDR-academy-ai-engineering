@@ -136,6 +136,25 @@ class Settings(BaseSettings):
     # pulled from the HuggingFace hub on first load.
     RERANKER_MODEL: str = "cross-encoder/mmarco-mMiniLMv2-L12-H384-v1"
 
+    # --- Session 10: hybrid search + reranking -------------------------------
+    # Text search configuration of the lexical branch. MUST match the one baked
+    # into the ``content_tsv`` generated column (migration 0003) — a query parsed
+    # with a different configuration produces lexemes the index cannot match.
+    # ``english`` and not ``spanish``: the corpus is written in English (see 0003).
+    FTS_CONFIG: str = "english"
+    # Which retrieval branches run. ``vector`` keeps the Session 9 behaviour;
+    # ``hybrid`` adds the lexical branch and fuses both with RRF.
+    SEARCH_MODE: Literal["vector", "hybrid"] = "vector"
+    # RRF smoothing constant. 60 is the value from the original Cormack et al.
+    # paper: big enough that the top positions do not dominate outright, small
+    # enough that rank order still matters.
+    RRF_SMOOTHING_K: int = 60
+    # Recall-then-rerank. OFF by default so the baseline is the shipped pipeline;
+    # flip RERANK_ENABLED in .env to turn it on — no code change, per the brief.
+    RERANK_ENABLED: bool = False
+    RERANK_RECALL_K: int = 50  # wide, cheap recall handed to the cross-encoder
+    RERANK_TOP_N: int = 5  # narrow, expensive final cut
+
     @model_validator(mode="after")
     def validate_at_least_one_api_key(self) -> "Settings":
         """LiteLLM may try either provider via fallback, so we require at least one key."""

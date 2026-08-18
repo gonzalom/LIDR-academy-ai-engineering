@@ -8,6 +8,8 @@ everything back and leaves no orphan ``documents`` row.
 
 from __future__ import annotations
 
+import re
+
 from pgvector.sqlalchemy import HALFVEC
 from sqlalchemy import Integer, Row, cast, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -18,6 +20,34 @@ from app.generation.rag.store.models import ChunkRow, DocumentRow, EMBEDDING_DIM
 # The structural chunker emits one chunk per budget component; the vocabulary
 # is queryable thanks to the index on ``chunk_type`` (live-session filters).
 BUDGET_COMPONENT = "budget_component"
+
+# Tokens shorter than this carry no lexical signal ("a", "an", "of") and only
+# widen the OR-query. Postgres would drop most of them as stop words anyway.
+MIN_LEXICAL_TOKEN_LENGTH = 2
+
+_WORD = re.compile(r"[a-z0-9]+")
+
+
+def build_or_tsquery(query: str) -> str:
+    """Turn a natural-language query into an OR-ed ``to_tsquery`` expression.
+
+    Why not ``plainto_tsquery``/``websearch_to_tsquery``: both AND the terms.
+    Our queries are full project descriptions ("a marketplace with Stripe
+    payments and a seller dashboard"), and no single chunk contains every term,
+    so an AND-query returns zero rows and the lexical branch contributes
+    nothing. OR-ing the terms and letting ``ts_rank`` do the ordering is the
+    standard shape of a lexical branch in hybrid retrieval: recall is the
+    branch's job, precision is RRF's and the reranker's.
+
+    Tokens are reduced to ``[a-z0-9]+`` so nothing the user types can reach
+    ``to_tsquery``'s parser as an operator (``!``, ``&``, ``:*``) — that would
+    be a syntax error at best and injection into the query language at worst.
+    """
+    seen: dict[str, None] = {}
+    for token in _WORD.findall(query.lower()):
+        if len(token) >= MIN_LEXICAL_TOKEN_LENGTH:
+            seen.setdefault(token, None)
+    return " | ".join(seen)
 
 
 class ChunkStore:
@@ -89,6 +119,42 @@ class ChunkStore:
                 distance.label("distance"),
             )
             .order_by(distance)
+            .limit(k)
+        )
+        return list((await session.execute(stmt)).all())
+
+    async def search_lexical(
+        self, session: AsyncSession, *, query: str, k: int, fts_config: str
+    ) -> list[Row]:
+        """Top-k chunks by lexical relevance over the ``content_tsv`` column.
+
+        The keyword half of hybrid search. It catches exactly what the embedding
+        misses: rare literals — "PSD2", "OAuth 2.0", a framework name — which a
+        bi-encoder blurs into whatever it saw most during training, but which a
+        lexeme match nails.
+
+        ``@@`` is answered by the GIN index (migration 0003); ``ts_rank`` then
+        scores only the rows that matched, so the cost is proportional to the
+        matches, not to the corpus. An empty tsquery (a query with no usable
+        tokens) matches nothing and returns an empty list — never every row.
+        """
+        tsquery_input = build_or_tsquery(query)
+        if not tsquery_input:
+            return []
+
+        tsquery = func.to_tsquery(fts_config, tsquery_input)
+        rank = func.ts_rank(ChunkRow.content_tsv, tsquery)
+        stmt = (
+            select(
+                ChunkRow.id,
+                ChunkRow.document_id,
+                ChunkRow.chunk_type,
+                ChunkRow.content,
+                ChunkRow.metadata_,
+                rank.label("rank"),
+            )
+            .where(ChunkRow.content_tsv.op("@@")(tsquery))
+            .order_by(rank.desc(), ChunkRow.id)  # stable order for equal ranks
             .limit(k)
         )
         return list((await session.execute(stmt)).all())

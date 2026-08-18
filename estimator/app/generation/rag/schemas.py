@@ -143,6 +143,72 @@ class SearchResponse(BaseModel):
 
 
 # ---------------------------------------------------------------------------
+# Session 10 — hybrid retrieval (vector + lexical, fused with RRF) + reranking.
+# ---------------------------------------------------------------------------
+
+SearchMode = Literal["vector", "hybrid"]
+
+
+class RankedHit(BaseModel):
+    """One chunk in a hybrid/reranked ranking.
+
+    Every branch-specific field is optional on purpose: a chunk found only by
+    the lexical branch has no ``distance``, one found only by the vector branch
+    has no ``lexical_rank``, and nothing has a ``rerank_score`` when reranking is
+    off. Keeping the per-branch provenance (instead of just the final score) is
+    what lets the measurement explain WHY a configuration won, not only that it did.
+    """
+
+    chunk_id: int
+    document_id: int
+    chunk_type: str
+    content: str
+    metadata: dict
+    score: float = Field(description="Final ranking score under the active configuration.")
+    distance: float | None = Field(default=None, description="Cosine distance, if vector-found.")
+    lexical_rank: float | None = Field(default=None, description="ts_rank, if lexical-found.")
+    vector_position: int | None = Field(default=None, description="1-based rank in the vector branch.")
+    lexical_position: int | None = Field(default=None, description="1-based rank in the lexical branch.")
+    rerank_score: float | None = Field(default=None, description="Cross-encoder score, if reranked.")
+
+
+class HybridSearchRequest(BaseModel):
+    """Payload for ``POST /search/hybrid``.
+
+    Every field is optional and falls back to its setting: an empty body runs
+    whatever ``.env`` configures, and each of the four configurations of the
+    brief is one explicit body. That is the "invocable and reproducible without
+    touching code" requirement, satisfied twice over (env or request).
+    """
+
+    query: str = Field(min_length=1, description="Free-text query (a project description).")
+    k: int | None = Field(default=None, ge=1, le=50, description="Chunks to return (top-k).")
+    mode: SearchMode | None = Field(default=None, description="vector | hybrid.")
+    rerank: bool | None = Field(default=None, description="Apply the cross-encoder.")
+    recall_k: int | None = Field(
+        default=None, ge=1, le=200, description="Recall width before the final cut."
+    )
+
+
+class RetrievalRun(BaseModel):
+    """Result of one retrieval under one configuration, with its timings.
+
+    Timings are split because the exercise asks whether the reranker's relevance
+    gain justifies its latency: a single total would hide the answer.
+    """
+
+    query: str
+    mode: SearchMode
+    reranked: bool
+    top_k: int
+    candidates: int = Field(ge=0, description="Chunks handed to the final cut (recall width).")
+    retrieval_ms: int = Field(ge=0, description="Embedding + SQL + fusion.")
+    rerank_ms: int = Field(ge=0, description="Cross-encoder scoring only (0 when off).")
+    total_ms: int = Field(ge=0)
+    results: list[RankedHit]
+
+
+# ---------------------------------------------------------------------------
 # Session 9 — RAG estimation pipeline (query understanding → generation).
 #
 # These types implement the locked contract from the Session 9 articles. They
