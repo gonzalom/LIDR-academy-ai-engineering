@@ -32,6 +32,8 @@ from app.foundation.llm.runtime_config import RuntimeModelConfig
 from app.foundation.llm.wrapper import LLMWrapper
 from app.foundation.persistence.database import get_async_session_factory
 from app.generation.rag.ingest_service import RagIngestService
+from app.generation.rag.retrieval.pipeline import RetrievalPipeline
+from app.generation.rag.retrieval.reranker import CrossEncoderReranker
 from app.generation.rag.retriever import SemanticRetriever
 from app.generation.rag.store.repository import ChunkStore
 from app.generation.conversation.store import SessionStore
@@ -133,6 +135,32 @@ def get_semantic_retriever() -> SemanticRetriever | None:
         embedder=embedder,
         session_factory=get_async_session_factory(),
         store=get_chunk_store(),
+    )
+
+
+# --- Session 10: hybrid retrieval + reranking -------------------------------
+
+
+@lru_cache
+def get_reranker() -> CrossEncoderReranker:
+    """Cross-encoder wrapper (singleton). Cached so the ~450MB model is loaded
+    once per process; the wrapper itself loads lazily on first score()."""
+    return CrossEncoderReranker.from_settings()
+
+
+@lru_cache
+def get_retrieval_pipeline() -> RetrievalPipeline | None:
+    """Hybrid retrieval orchestrator. ``None`` without an embedder, same
+    contract as the other query-side providers."""
+    embedder = get_embedder()
+    if embedder is None:
+        return None
+    return RetrievalPipeline(
+        embedder=embedder,
+        session_factory=get_async_session_factory(),
+        store=get_chunk_store(),
+        reranker=get_reranker(),
+        settings=get_settings(),
     )
 
 
